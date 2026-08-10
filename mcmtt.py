@@ -1,14 +1,6 @@
 """
 mcmtt.py — Multi-Camera Multi-Target Tracking core.
 
-Fixes the two bugs seen in production:
-  1) An empty chair on cam-05 received the SAME global UID as a real person
-     sitting on cam-04 AT THE SAME MOMENT. One identity cannot occupy two
-     cameras simultaneously -> enforced by a spatiotemporal exclusion gate.
-  2) A person who moved within a camera received a NEW UID -> fixed by a
-     multi-view gallery + global (Hungarian) assignment instead of greedy
-     per-detection matching.
-
 Design
 ------
 * GlobalGallery   : centralised store of global UIDs -> multi-view appearance
@@ -212,9 +204,7 @@ class GlobalGallery:
                  overlap_groups=None):
         self.same_cam_threshold = float(same_cam_threshold)
         self.cross_cam_threshold = float(cross_cam_threshold)
-        # A UID seen on another camera within this many seconds is considered
-        # STILL THERE -> cannot simultaneously be here. This single rule is what
-        # prevents the cam-05 chair from stealing the cam-04 person's UID.
+
         self.co_occurrence_window = float(co_occurrence_window)
         # Even after the co-occurrence window, a person needs physical time to
         # walk between views. Matches faster than this are rejected.
@@ -223,15 +213,7 @@ class GlobalGallery:
         self.proto_merge_thr = float(proto_merge_thr)
         self.ambiguity_margin = float(ambiguity_margin)
         self.max_identities = int(max_identities)
-        # OVERLAPPING-FOV CAMERA GROUPS. Cameras that view the SAME physical
-        # space (e.g. cam3-ch201 and cam4-ch501 both cover one office/meeting
-        # room) legitimately see the SAME person at the SAME instant. For such
-        # pairs the co-occurrence rule ("one identity can't be on two cameras
-        # at once") and the min-transit rule are WRONG — they block the correct
-        # cross-camera merge. overlap_groups is a list of sets of camera names
-        # that share a space; within a group, co-occurrence and transit gates
-        # are skipped. Across groups (truly separate rooms) the gates still
-        # apply, so a chair in another room still cannot steal a UID.
+
         self.overlap_groups = [set(g) for g in (overlap_groups or [])]
         self._ids = {}     # uid -> Identity
         self.stats = {"assigned": 0, "created": 0, "blocked_cooccurrence": 0,
