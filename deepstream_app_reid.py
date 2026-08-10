@@ -31,8 +31,6 @@ from person_db import PersonDatabase
 CAMERA_STREAMS =[
 
 {"name":"cam1-ch301","uri":"rtsp://sanjay:prama8833@192.168.88.28:554/Streaming/channels/301"},
-#{"name":"cam1-ch401","uri":"rtsp://sanjay:prama8833@192.168.88.28:554/Streaming/channels/401"},
-#{"name":"cam1-ch701","uri":"rtsp://sanjay:prama8833@192.168.88.28:554/Streaming/channels/701"},
 {"name":"cam2-ch801","uri":"rtsp://sanjay:prama8833@192.168.88.28:554/Streaming/channels/801"},
 {"name":"cam3-ch201","uri":"rtsp://sanjay:prama8833@192.168.88.28:554/Streaming/channels/201"},
 {"name":"cam4-ch501","uri":"rtsp://sanjay:prama8833@192.168.88.28:554/Streaming/channels/501"},
@@ -75,16 +73,7 @@ if _skip_env and ONLY_CAMERA_INDEX is None :
         else :
             print ("[CAMERA] SKIP_CAMERAS would drop ALL cameras — ignoring it.")
 
-# labels.txt is the SINGLE SOURCE OF TRUTH for classes. The class list is NOT
-# hardcoded anywhere in this file — change labels.txt (and num-detected-classes
-# in config_infer.txt to match) and the app adapts automatically.
-#
-# Format: one class name per line, in class-id order (line 0 = class_id 0).
-# Optional per-line control of person/non-person handling via a trailing tag:
-#     Adult - Male sitting        # (default: auto-detected as person by keyword)
-#     Dog                    !nonperson   # force: never tracked as a person
-#     Robot inspector        !person      # force: tracked as a person
-# Anything after '#' on a line is ignored as a comment.
+
 LABELS_PATH =os .environ .get ("LABELS_PATH","labels.txt")
 
 PERSON_KEYWORDS =("adult","kid","female","male","boy","girl",
@@ -185,15 +174,7 @@ def split_label (label ):
 def compose_label (demo ,posture ):
     return f"{demo } {posture }"if posture else demo
 
-# Census buckets used by the CSV summary columns. The 13 fine-grained labels
-# (sitting/standing/etc.) collapse into four counted groups; Dog and anything
-# unrecognised map to None and are NOT counted in the Total Unique columns.
-DEMO_GROUPS =("Female","Male","Kid - Boy","Kid - Girl")
-# Fraction of a UID's pooled demographic votes the leading group must hold before
-# its label is shown. Below this the raw argmax is used. Protects against the
-# detector's sporadic wrong-gender frames (male shown as Adult-Female) flipping a
-# stable identity's displayed demographic. 0.60 = the leader needs a clear
-# majority, not a mere plurality.
+
 DEMO_MAJORITY =float (os .environ .get ("REID_DEMO_MAJORITY","0.60"))
 
 def demo_group (demo ):
@@ -216,28 +197,8 @@ def demo_group (demo ):
 
 # ---- Demographic (age / gender) resolution ---------------------------------
 # One identity = one demographic, pooled from the per-UID class votes.
-#
-# CORRECTNESS FIX (v26): the previous version summed gender across ages —
-# "Female" = (Adult-Female votes + Kid-Girl votes), "Male" = (Adult-Male +
-# Kid-Boy) — and took the larger bucket. On this detector, a genuinely
-# Adult-Male person picks up scattered wrong frames of BOTH "Adult - Female" and
-# "Kid - Girl"; those two female-ish buckets SUM and can beat the single, larger
-# "Adult - Male" class, so the identity flipped to Female in the CSV. That is the
-# observed "almost everything is female" bug. The fix is to take the demographic
-# from the DOMINANT CONCRETE CLASS (what the detector actually emits most for
-# this identity) rather than from cross-age gender sums.
-#
-# The ONE deliberate override kept from before is an age guard: the rarer,
-# higher-cost "Kid" call is only shown when Kid votes hold a clear majority AND a
-# minimum count, so an intermittent adult->kid mislabel (image: an adult drawn
-# "Kid - Girl sitting") does not turn an adult into a child. Gender is then taken
-# from the dominant class WITHIN the resolved age band, so it never mixes a
-# Kid-Girl vote's gender onto an Adult-Male base.
-#
-# NOTE: this is a robustness layer over NOISY detector output — it cannot fix a
-# model that emits the wrong class on (nearly) every frame for a person. If a
-# person is STILL mislabelled after this, the fix is at the detector/threshold/
-# training level; REID_KID_MIN_RATIO / REID_KID_MIN_VOTES tune the age guard.
+
+
 KID_MIN_RATIO =float (os .environ .get ("REID_KID_MIN_RATIO","0.60"))
 KID_MIN_VOTES =int (os .environ .get ("REID_KID_MIN_VOTES","3"))
 
@@ -306,46 +267,14 @@ def resolve_uid_demo (pid ,fallback =""):
 FRAME_W =1280
 FRAME_H =720
 
-# ReID cosine-similarity gates (env-tunable for on-device tuning without edits).
-# Cross-camera similarity is typically LOWER than same-camera (lighting/pose
-# differ between cam7 outdoor and cam8 indoor), so the cross-cam bar is looser.
-# If you see wrong merges, raise CROSS_CAMERA_THRESHOLD; if hand-offs are missed,
-# lower it. Watch the [REID-HEALTH] "stranger floor" vs "same person" margin.
 SIMILARITY_THRESHOLD =float (os .environ .get ("REID_SAME_CAM_THR","0.68"))
 SOFT_THRESHOLD =float (os .environ .get ("REID_SOFT_THR","0.62"))
-# Measured on-device: stranger (cross-identity) p95 ~0.64-0.78, same-person mean
-# ~0.97. A 0.55 bar sat BELOW the stranger p95, so different people were being
-# merged (observed [X-CAM] merges at 0.619 / 0.643). 0.80 sits above the stranger
-# p95 and well below the same-person mean, giving a safe separation.
-# Watch the [REID-HEALTH] "stranger floor" line and keep this above its p95.
-# 0.84. The previous 0.88 blocked EVERY cross-camera hand-off for a whole run
-# ("hand-offs succeeded: 0", "NO UID has been seen on more than one camera")
-# while the reported stranger p95 still climbed to 0.99 — proof that the bar
-# was not the thing separating identities. That inflated p95 was an ARTIFACT:
-# commits were failing, so one real person existed as several UIDs and got
-# counted as "different people" scoring ~1.0 against each other. With the
-# commit path fixed that pollution goes away. 0.84 sits below every observed
-# within-identity mean (0.841-0.974) and far above the stranger MEAN
-# (0.52-0.64). Re-check the [REID-HEALTH] stranger floor after this run and
-# tune from the real numbers.
-# 0.84 strict bar (reverted from the 0.86 over-correction, which rejected the
-# orange man's real 0.846 cross-camera match and minted a new UID for him). The
-# strict bar is now backed up by a MARGIN-GATED floor below, so pollution control
-# comes from the contamination guard + margin logic, NOT from an ever-higher bar.
+
 CROSS_CAMERA_THRESHOLD =float (os .environ .get ("REID_CROSS_CAM_THR","0.84"))
-# Margin-gated cross-camera acceptance: a cross-camera candidate at/above this
-# floor that also beats the runner-up by REID_CROSS_MARGIN is accepted even below
-# the strict bar. This recovers the 0.846 hand-off (its runner-up was far lower)
-# while still rejecting ambiguous stranger collisions (several close candidates).
+
 CROSS_CAMERA_FLOOR =float (os .environ .get ("REID_CROSS_CAM_FLOOR","0.80"))
 CROSS_MARGIN =float (os .environ .get ("REID_CROSS_MARGIN","0.10"))
-# Relaxed SAME-CAMERA bar used only for a candidate seen on this camera within
-# the last few seconds — the signature of a person changing posture (stand<->sit)
-# whose appearance drops below the normal 0.68 bar (measured: the man who stood
-# on cam4 then sat on cam3 scored 0.642 against his own standing gallery and was
-# given a NEW UID). Recency + same-camera + clear top-margin make this safe; it
-# never lowers the bar for strangers or for cross-camera matches. Keep it above
-# the stranger p95 (~0.69-0.75 in the logs) so it cannot merge different people.
+
 POSTURE_THRESHOLD =float (os .environ .get ("REID_POSTURE_THR","0.60"))
 POSTURE_WINDOW_SEC =float (os .environ .get ("REID_POSTURE_WINDOW","12.0"))
 # Minimum centroid similarity for the same-camera duplicate reaper to collapse
@@ -406,27 +335,10 @@ _merge_failures ={}           # (keep,drop) -> last failure timestamp
 from mcmtt import GlobalGallery ,l2n as _mc_l2n
 
 CO_OCCURRENCE_WINDOW =float (os .environ .get ("CO_OCCURRENCE_WINDOW","2.0"))
-# was 3.0. The MCMTT transit gate rejects a cross-camera match that happens
-# sooner than this after the identity was last seen (for real) on another
-# camera. cam-07 and cam-08 face OPPOSITE directions along the same narrow
-# corridor, so a person exits one view and enters the other in ~1-2s; a 3s gate
-# rejected that legitimate hand-off and minted a new UID. 1s still blocks a
-# physically-impossible instant teleport between truly distant cameras while
-# allowing a real corridor crossing. Genuine simultaneous presence is separately
-# blocked by the presence-gated live-track occupancy guard.
+
 MIN_TRANSIT_TIME =float (os .environ .get ("MIN_TRANSIT_TIME","1.0"))
 MAX_VIEW_PROTOS =int (os .environ .get ("MAX_VIEW_PROTOS","6"))
-# OVERLAPPING-FOV CAMERA GROUPS. Cameras listed together here view the SAME
-# physical space and legitimately see the same person at the same instant, so
-# the MCMTT co-occurrence / min-transit gates are SKIPPED between them (those
-# gates assume one person can't be on two cameras at once, which is false for
-# overlapping views and was blocking correct cross-camera merges — e.g. the
-# standing man on cam4-ch501 who sits down and reappears on cam3-ch201 could
-# not merge back). Cameras in DIFFERENT groups keep both gates, so a fixture in
-# another room still cannot steal a UID. Format (env): groups separated by ';',
-# camera names within a group separated by ','. Example:
-#   CAMERA_OVERLAP_GROUPS="cam3-ch201,cam4-ch501;cam1-ch301,cam2-ch801"
-# Default below encodes the office/meeting-room pair seen in the sample images.
+
 def _parse_overlap_groups (spec ):
     groups =[]
     for grp in (spec or "").split (";"):
@@ -434,63 +346,22 @@ def _parse_overlap_groups (spec ):
         if len (cams )>=2 :
             groups .append (set (cams ))
     return groups
-# DEFAULT: NO overlap group. "Overlapping FOV" means the SAME person is visible
-# in two camera frames AT THE SAME INSTANT (the views physically share space). In
-# this deployment cam1-ch401 / cam1-ch701 / cam3-ch201 / cam4-ch501 are DIFFERENT
-# DESKS in the same office — each shows its OWN people, and no single person is in
-# two views at once. Grouping them as overlapping (a bad v22 guess) DISABLED the
-# co-occurrence exclusion between them, so one global UID (SFK6AT) landed on three
-# DIFFERENT seated men simultaneously. With no group, the spatiotemporal gate is
-# active on every camera pair: an identity still live on one camera cannot be
-# claimed on another within CO_OCCURRENCE_WINDOW, which is exactly what stops a
-# UID being painted on two different people at once.
-#
-# ONLY add cameras to a group if the SAME person is genuinely visible in both at
-# the same moment (true FOV overlap). Format (env): groups separated by ';',
-# cameras within a group by ','. Example for a real overlapping pair:
-#   CAMERA_OVERLAP_GROUPS="cam3-ch201,cam4-ch501"
+
 CAMERA_OVERLAP_GROUPS =_parse_overlap_groups (os .environ .get (
 "CAMERA_OVERLAP_GROUPS",""))
 GALLERY =None                 # created in main() once thresholds are known
 ALLOW_REIDLESS_COMMIT =os .environ .get ("ALLOW_REIDLESS_COMMIT","1")not in ("0","false","False","")
-# How long a confirmed track waits for a ReID vector before giving up and
-# committing WITHOUT appearance. Committing immediately (the old behaviour, from
-# when ReID was broken) minted a UID that was then merged away seconds later —
-# visible as a person getting a UID, then none, then a different one. Now that
-# ReID works, wait for an embedding so the FIRST UID is already the right one.
+
 REIDLESS_COMMIT_DELAY =float (os .environ .get ("REIDLESS_COMMIT_DELAY","3.0"))
 
-# --- Same-camera spatial ID recovery (anti-flicker) --------------------------
-# The DeepStream tracker sometimes drops an object_id and re-mints a new one for
-# the SAME physical person (posture change sit<->stand, brief occlusion, a
-# detector gap). Without recovery that yields a brand-new UID = flicker. When a
-# fresh tracker id appears, we first check whether a recently-lost UID existed
-# at nearly the same place; if so the new track INHERITS that UID.
+
 RECOVER_IOU =float (os .environ .get ("RECOVER_IOU","0.20"))
-# ^ was 0.3. A seated person whose box shifts a little on re-detection (posture,
-# lean, detector jitter) can drop below 0.30 IoU with its last box and then fail
-# recovery -> new UID = flicker. 0.20 keeps the inheritance while still being
-# well above coincidental overlap between two different people.
-# --- Retention: how long an identity stays re-identifiable ------------------
-# Requirement: a person's data is kept for 30 minutes so they can be recognised
-# again on the SAME camera or a DIFFERENT one within that window.
-# 48-hour rolling retention. Was 1800 (30 min), which meant anyone off-camera
-# for half an hour came back as a BRAND NEW UID — the log showed "pruned 28
-# identities unseen for >30 min" repeatedly. 48h keeps embeddings available for
-# the full requirement window so a person who leaves and returns the next day
-# still re-identifies to the same global UID.
+
 RETENTION_SECONDS =float (os .environ .get ("RETENTION_SECONDS","172800"))  # 48 h
-# Same-camera spatial recovery: a track that vanishes and reappears at nearly
-# the same place inherits its UID without needing appearance. 6s was too short
-# for someone who steps out of frame briefly; 45s covers normal comings/goings
-# while still being far below the appearance-based retention window.
+
 RECOVER_MAX_GAP =float (os .environ .get ("RECOVER_MAX_GAP","45.0"))
 RECOVER_MAX_CENTER_FRAC =float (os .environ .get ("RECOVER_MAX_CENTER_FRAC","0.18"))
-# ^ was 0.12. OR-path to IoU: inherit the lost UID if the new box's centre is
-# within this fraction of the frame diagonal of the lost track's centre. Raised
-# so a person who shifts in a chair (small centre move) still re-inherits rather
-# than minting a new UID. Two distinct people rarely occupy the same centre.
-# recent_local[(src_idx)] -> list of (pid, last_box, last_center, last_seen)
+
 recent_local_tracks =defaultdict (list )
 
 MIN_DET_CONFIDENCE =float (os .environ .get ("MIN_DET_CONFIDENCE","0.30"))
@@ -502,84 +373,36 @@ STATIC_MIN_SECONDS =4.0
 STATIC_MAX_DRIFT_PX =8.0
 STATIC_MIN_SAMPLES =20
 
-# Furniture / phantom suppression: a detection that is static from its very first
-# frame and NEVER moves is almost certainly furniture (empty chair) mis-detected
-# as a person, not a real person who walked in and sat down. We refuse to commit
-# a NEW UID for such a track. A real person is normally seen moving in first, so
-# they will have shown motion before this timeout elapses. Set
-# SUPPRESS_STATIC_NEW=0 to disable if it ever hides a real motionless person.
+
 SUPPRESS_STATIC_NEW =os .environ .get ("SUPPRESS_STATIC_NEW","1")not in ("0","false","False","")
 STATIC_NEW_REJECT_SECONDS =8.0   # if static & motionless this long before commit -> furniture
-# Minimum cumulative center displacement (px) since a track first appeared for it
-# to count as "a person who moved" (vs furniture). Works from frame 1, so it
-# catches empty chairs before they can commit. TRADE-OFF: a real person who is
-# ALREADY seated when the stream starts and never moves is indistinguishable from
-# furniture without ReID, so they will not get a UID until they move. Lower this
-# if genuinely-still people are being missed; raise it if chairs slip through.
+
 STATIC_MOVE_MIN_PX =float (os .environ .get ("STATIC_MOVE_MIN_PX","28"))
-# Peak-displacement floor for the APPEARANCE-ONLY still-person commit escape
-# (the branch that lets a genuinely-still seated person commit on a clean, non-
-# fixture embedding without full motion confirmation). Set BELOW STATIC_MOVE_MIN_PX
-# (the "clearly walked" bar): a seated person's shifting/leaning moves the box
-# centre more than this over FIXTURE_LEARN_SECONDS, while an empty chair does not.
-# This is the peak-travel alternative to the micro-motion-frame count; either one
-# passing is enough evidence of a living occupant. Raise if chairs still slip
-# through this escape; lower if a very still person is missed.
+
 STATIC_STILL_PERSON_MIN_PX =float (os .environ .get ("STATIC_STILL_PERSON_MIN_PX","12"))
 _track_first_center ={}
 tracker_ever_moved =defaultdict (bool )
 tracker_first_seen_ts ={}
 
 # ---- MOTION-HISTORY personhood (v21) ---------------------------------------
-# The decisive signal separating a PERSON from a FIXTURE (parked bikes, empty
-# chair) is MOTION over the track's life — NOT detector confidence (a well-lit
-# bike row detects with higher, steadier confidence than a dim seated person,
-# so the v19/v20 confidence gate committed bikes and starved people) and NOT
-# box deformation (a rocking chair deforms more than a still person).
-#
-# We accumulate, per track:
-#   * peak displacement from birth position (_track_peak_disp)
-#   * a count of frames showing real frame-to-frame motion (tracker_motion_frames)
-# A person racks these up (arriving, leaning, reaching, shifting, standing); a
-# rigid fixture stays pinned and accumulates ~none.
+
 _track_last_center ={}
 _track_peak_disp =defaultdict (float )
 tracker_motion_frames =defaultdict (int )
 _track_motion_run =defaultdict (int )
 _track_center_win =defaultdict (lambda :deque (maxlen =16 ))
-# Raised 9 -> 14. A net half-window shift below ~14px on a ~26fps stream is
-# within the range an unstable detector box on a rigid object (empty chair,
-# bike) produces, so at 9px chair-wobble was being counted as person motion and
-# an office chair could accumulate MOTION_FRAMES_GRACE crossings and commit. 14
-# requires a real translation of the box centre, which furniture does not do.
+
 MOTION_STEP_MIN_PX =float (os .environ .get ("MOTION_STEP_MIN_PX","14"))
 MOTION_FRAMES_FOR_PERSON =int (os .environ .get ("MOTION_FRAMES_FOR_PERSON","6"))
-# The grace path (some-motion + past STATIC_GRACE_SECONDS -> commit) was the
-# hole the empty chair fell through. Raised 4 -> 8 consecutive motion frames so
-# only a track showing SUSTAINED translation (a person shifting/leaning) can use
-# it; sporadic chair-jitter crossings never build a run this long.
+
 MOTION_FRAMES_GRACE =int (os .environ .get ("MOTION_FRAMES_GRACE","8"))
 STATIC_GRACE_SECONDS =float (os .environ .get ("STATIC_GRACE_SECONDS","4.0"))
 
 # ---- AUTO-LEARNED FIXTURE ZONES (v21) --------------------------------------
-# No bounding-box metric (motion, deformation, confidence, spread) can cleanly
-# separate a nearly-still person from a false-positive on furniture/bikes whose
-# detector box jitters — a jittery FP box mimics small human motion. The
-# separating fact is PERSISTENCE-IN-PLACE: parked bikes and empty chairs occupy
-# the SAME image region continuously, for the whole run. A person confirmed by
-# MOTION (walking in, shifting, standing) is immune; a detection that is pinned
-# to one spot for a long time REGISTERS that spot as a fixture zone, and later
-# pinned detections there are suppressed. A person walking through moves out of
-# the zone, so they are never suppressed by it.
-#   key: (src_idx, gx, gy) grid cell; value: last time a pinned track was there
+
 _fixture_zones ={}                      # {(src_idx, gx, gy): last_seen_ts}
 FIXTURE_GRID_PX =float (os .environ .get ("FIXTURE_GRID_PX","64"))
-# A non-moving track older than this REGISTERS its cell as a fixture zone.
-# Lowered 10 -> 6. A pinned empty chair must REGISTER its zone and learn its
-# appearance BEFORE the still-person commit branch (age >= this) can fire, or a
-# brand-new chair could commit in the gap. 6s is still far longer than any
-# detector flicker, so it never mislabels a walking-through person (who has left
-# the cell — and latched ever_moved — long before 6s).
+
 FIXTURE_LEARN_SECONDS =float (os .environ .get ("FIXTURE_LEARN_SECONDS","6.0"))
 # A fixture zone is forgotten if no pinned track refreshes it for this long
 # (so a chair that gets permanently occupied by a person eventually frees up).
@@ -601,26 +424,9 @@ PERSON_CONF_MEAN =float (os .environ .get ("PERSON_CONF_MEAN","0.60"))
 PERSON_MIN_HITS =int (os .environ .get ("PERSON_MIN_HITS","20"))
 PERSON_HIT_HZ =float (os .environ .get ("PERSON_HIT_HZ","8.0"))
 PERSON_CONFIRM_STREAK =int (os .environ .get ("PERSON_CONFIRM_STREAK","8"))
-# How long a committed UID stays reserved to its track after the track was
-# last seen. Must be >= the tracker's maxShadowTrackingAge so a briefly-occluded
-# or detector-missed person never has their identity handed to someone else.
-# Raised 6s -> 18s to match maxShadowTrackingAge=450 (~17s) in the new tracker
-# config: NvDCF now holds a seated/occluded person in shadow for ~17s, so their
-# UID must stay reserved for at least that long or the UID could be reclaimed
-# while the very same track is still alive in shadow.
+
 UID_HOLD_SECONDS =float (os .environ .get ("UID_HOLD_SECONDS","18.0"))
-# Cross-camera occupancy window. A committed UID counts as "still occupying"
-# another camera (and is therefore ineligible for a hand-off here) ONLY if that
-# camera saw it with a REAL detection within this many seconds. This is
-# DELIBERATELY short and DECOUPLED from UID_HOLD_SECONDS (18s): UID_HOLD is a
-# SAME-camera reservation sized to the tracker's ~17s shadow window, but reusing
-# it for cross-camera exclusion meant a person who walked from cam-07 to cam-08
-# was blocked from re-identifying to their own UID for ~18s (their cam-07 track
-# was still coasting in shadow), so cam-08 minted a brand-new UID. 2s only blocks
-# GENUINE simultaneous presence (both cameras seeing confident tracks at once,
-# which is what the SFK6AT "one UID on three men" guard needs); a person who has
-# actually left cam-07 is eligible on cam-08 within 2s. Raise only if real
-# same-instant double-assignment reappears.
+
 CROSS_CAM_BUSY_WINDOW =float (os .environ .get ("CROSS_CAM_BUSY_WINDOW","2.0"))
 # A track whose NvDCF tracker_confidence is at/above this is treated as a REAL,
 # present detection; below it (typical while coasting in shadow after the person
@@ -702,13 +508,7 @@ def _deformation_score (tkey ,w ,h ):
         _deform_streak [tkey ]=0
         return 0.0 ,True
 
-    # PERSISTENCE. Lag-1 autocorrelation of white noise over N samples has
-    # std ~1/sqrt(N) (~0.105 here), so a 0.30 bar is only ~2.9 sigma and is
-    # crossed BY CHANCE roughly every 1500 frames — measured: every rigid
-    # object committed at exactly 58.9s. A person satisfies both conditions
-    # continuously, so requiring them to hold for consecutive frames costs a
-    # real person a fraction of a second and makes a chance crossing
-    # essentially impossible (p ~ 0.05^N).
+
     _deform_streak [tkey ]=_deform_streak .get (tkey ,0 )+1
     if _deform_streak [tkey ]<DEFORM_CONFIRM_FRAMES :
         return 0.0 ,True
@@ -770,10 +570,7 @@ MIN_BOX_H_KEEP =24
 HEADLESS =os .environ .get ("HEADLESS","0")not in ("0","false","False","")
 _NO_META_WRITE =os .environ .get ("NO_META_WRITE","0")not in ("0","false","False","")
 
-# New-person aspect gate. Was 1.15 (box must be clearly taller than wide), which
-# silently REJECTED crouching people and people whose lower body is occluded by
-# motorbikes (cam-07/08) — their box is near-square. Lowered to 0.75 so a bent-
-# over or partially-occluded person is accepted. Env-tunable per site.
+
 MIN_PERSON_ASPECT_NEW =float (os .environ .get ("MIN_PERSON_ASPECT_NEW","0.75"))
 MIN_PERSON_ASPECT_KEEP =float (os .environ .get ("MIN_PERSON_ASPECT_KEEP","0.65"))
 ESTABLISH_AFTER_SEEN =3
@@ -791,19 +588,11 @@ DB :PersonDatabase =None
 tracker_to_person ={}
 _track_emb_buffer ={}
 tracker_last_seen ={}
-# Last time each track was seen WITH A REAL, CONFIDENT detection (tracker
-# confidence >= PRESENCE_CONF), as opposed to merely coasting in NvDCF shadow
-# after the person has left the camera. The cross-camera occupancy guard reads
-# THIS (not tracker_last_seen) so a person who walked out of cam-07 stops
-# "occupying" cam-07 within CROSS_CAM_BUSY_WINDOW and can be handed off to cam-08.
+
 tracker_present_ts ={}
 camera_map ={}
 tracker_class_votes =defaultdict (lambda :defaultdict (int ))
-# Demographic (Adult-Male / Adult-Female / Kid-...) votes pooled PER COMMITTED
-# UID rather than per tracker key. Posture legitimately differs between views
-# (sitting on one camera, standing on another) but demographics must not: the
-# same person was being drawn as "Adult - Male standing" on cam-02 and
-# "Adult - Female standing" on cam-04 because each camera voted in isolation.
+
 uid_demo_votes =defaultdict (lambda :defaultdict (int ))
 tracker_posture_recent =defaultdict (lambda :deque (maxlen =POSTURE_WINDOW ))
 tracker_hits =defaultdict (int )
@@ -828,11 +617,7 @@ _unknown_cids =set ()
 
 def class_health_report (final =False ):
     tag ="FINAL"if final else "REPORT"
-    # Per-track appearance summary: how detector confidence and hit density
-    # actually distribute for live tracks. This is what lets the PERSON_CONF_MEAN
-    # / PERSON_HIT_HZ gates be tuned from real numbers instead of guessed. A
-    # real person should show mean-conf well above the bar; an empty-chair false
-    # positive should show a visibly lower mean-conf.
+
     _live =[k for k ,h in tracker_conf_hist .items ()if h ]
     if _live :
         confs =[sum (h )/len (h )for h in (tracker_conf_hist [k ]for k in _live )]
@@ -846,10 +631,7 @@ def class_health_report (final =False ):
         f"p90={_p (0.9 ):.2f} | person gate: conf>={PERSON_CONF_MEAN } "
         f"hits>={PERSON_MIN_HITS } rate>={PERSON_HIT_HZ }/s")
 
-    # Fixture-zone map: how many suppression zones have been auto-learned, and
-    # how many live tracks are currently confirmed-person by motion. This is the
-    # v21 furniture killer's observable state — a growing zone count over spots
-    # like a bike row or an empty-chair cluster is the mechanism working.
+
     _moved =sum (1 for k in tracker_ever_moved if tracker_ever_moved [k ])
     print (f"[FIXTURES {tag }] {len (_fixture_zones )} auto-learned fixture zone(s) "
     f"| {_moved } track(s) motion-confirmed as person | learn "
@@ -858,11 +640,7 @@ def class_health_report (final =False ):
 
     if not _class_counts :
         return
-    # BUGFIX: `total` was referenced (below) but never computed, so this
-    # function raised 'name total is not defined' every report cycle. Because
-    # class_health_report() runs inside the batch probe, that surfaced as the
-    # recurring '[PROBE ERROR] name total is not defined' and aborted the tail
-    # of the handler (the detector-blind-spot analysis never printed).
+
     total =sum (_class_counts .values ())
     print (f"[CLASS-HEALTH {tag }] detector emitted {total } objects across "
     f"{len (_class_counts )} class id(s):")
@@ -888,17 +666,7 @@ def class_health_report (final =False ):
         f"0..{len (LABELS )-1 }. Detections of these classes are being "
         "silently discarded. Fix labels.txt / num-detected-classes.")
 
-    # DETECTOR BLIND SPOTS. A class that NEVER fires is a model/threshold matter,
-    # not an app one. But raw "class never detected" is MISLEADING here: this
-    # model always emits a POSTURE variant, so the postureless base classes
-    # (e.g. 3 'Adult - Male', 9 'Kid - Girl') and any unseen posture are expected
-    # to be empty whenever a sibling of the SAME demographic fired. Reporting
-    # those as blind spots is noise. So split the never-detected classes into:
-    #   (a) a DEMOGRAPHIC whose EVERY class is empty -> a genuine gap (that kind
-    #       of person was never detected, or nobody of that kind was in view), and
-    #   (b) a specific class empty while a SIBLING of the same demographic fired
-    #       -> expected/redundant (the model expressed that person via another
-    #       label), reported only as info.
+
     if total >0 :
         _fam_classes =defaultdict (list )   # family -> [cid,...]
         for cid in range (len (LABELS )):
@@ -1378,9 +1146,7 @@ _reid_diag_done =False
 _reid_obj_introspected =False
 _batch_diag_done =False
 
-# Holds the per-batch ReID tensor for the batch currently being processed, so
-# per-object index-style metadata can be resolved into a feature vector.
-# Populated at the top of _handle_batch, read inside extract_reid.
+
 _batch_reid_features =None      # np.ndarray [numFilled, featureSize] or None
 _batch_reid_map =None           # dict object_id -> reid vector (via pyds), or None
 _batch_reid_logged =False
@@ -1908,17 +1674,10 @@ CSV_HEADER =[
 "#Standing","#Sitting","Total Standing Time","Total Sitting Time",
 ]
 
-# Cap on the time gap (seconds) a single detection-to-detection step may add to a
-# posture's running total. If a track disappears and the same (cam, UID) session
-# reappears after a long occlusion, the elapsed interval is attributed to the
-# last-known posture; this cap stops one long gap from dumping minutes into a
-# single posture bucket. Env-tunable for on-device tuning.
+
 POSTURE_STEP_CAP =float (os .environ .get ("CSV_POSTURE_STEP_CAP","5.0"))
 
-# Per-(camera, UID) sessions accumulated over the current log window. Epoch
-# seconds are stored so dwell is a simple subtraction; datetimes are formatted
-# only at flush time. Guarded by an RLock (reentrant so the merge repointer can
-# fold sessions while other session code is on the stack without deadlocking).
+
 _sessions ={}                    # (cam, pid) -> session dict (see _touch_session)
 _uid_cameras =defaultdict (set ) # pid -> {cam,...}  (window-global, for Camera List)
 _sessions_lock =threading .RLock ()
@@ -2327,19 +2086,7 @@ def _try_cross_camera_merge (tkey ,pid ,cam ,src_idx ,now ):
     if avg is None :
         return pid
 
-    # FURNITURE GUARD (fixed). The old rule refused a cross-camera merge for ANY
-    # track that had not moved (`not tracker_ever_moved`). Every person in this
-    # deployment is a SEATED office worker who rarely accumulates the 6 net-motion
-    # frames needed to latch `tracker_ever_moved`, so this single line blocked
-    # EVERY hand-off ("hand-offs succeeded: 0", "NO UID seen on >1 camera") even
-    # though ReID separation was excellent. The real furniture signal is not
-    # "never moved" — it is "looks like a learned fixture (empty chair / bike)".
-    # A seated person's crop does NOT match a fixture prototype; a parked bike or
-    # empty chair does. So: block the merge only when this track's centroid still
-    # matches a learned fixture appearance. A motion-confirmed person is always
-    # allowed (they are proven human); a still track that is NOT a known fixture
-    # is allowed to re-join its own cross-camera identity. This is what lets the
-    # blue-shirt / white-shirt seated people hand off between overlapping cameras.
+
     if SUPPRESS_STATIC_NEW and not tracker_ever_moved .get (tkey ,False ):
         try :
             _flook ,_fsim =DB .is_fixture_appearance (avg ,cam =cam )
