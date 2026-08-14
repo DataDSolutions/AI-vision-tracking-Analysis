@@ -197,5 +197,5 @@ ReID:
   useVPICropScaler: 0
   addFeatureNormalization: 1
   minVisibility4GalleryUpdate: 0.6
-  onnxFile: "/home/sanjay/DeepStream-Yolo/trackers/reid/resnet50_market1501_aicity156.onnx"
-  modelEngineFile: "/home/sanjay/DeepStream-Yolo/trackers/reid/resnet50_market1501_aicity156.onnx_b100_gpu0_fp16.engine"
+  onnxFile: "/home/jetson/DeepStream-Yolo/trackers/reid/resnet50_market1501_aicity156.onnx"
+  modelEngineFile: "/home/jetson/DeepStream-Yolo/trackers/reid/resnet50_market1501_aicity156.onnx_b100_gpu0_fp16.engine"
