@@ -1,0 +1,53 @@
+[property]
+gpu-id=0
+net-scale-factor=0.0039215697906911373
+model-color-format=0
+# NOTE: this must match labels.txt. If you swap
+# the model, update num-detected-classes AND labels.txt together, or class ids
+# shift and every label after the divergence point is wrong.
+onnx-file=custom-yolo26n-v3.onnx
+model-engine-file=custom-yolo26n-v3.onnx_b4_gpu0_fp16.engine
+labelfile-path=labels.txt
+batch-size=4
+network-mode=2
+num-detected-classes=14
+# interval=0 -> run the detector on EVERY frame.
+# NOTE: v15 set this to 1 to chase a 1 fps collapse, but that collapse was
+# actually caused by the merge_persons UNIQUE-constraint retry storm (fixed in
+# person_db.py). Skipping frames cost ~50% of detections and starved short
+# appearances (e.g. cam-07) of ReID vectors, so people got no UID or a new one.
+# This run holds a steady 26-27 fps with interval=0, so keep full coverage.
+interval=0
+gie-unique-id=1
+process-mode=1
+network-type=0
+cluster-mode=2
+maintain-aspect-ratio=1
+symmetric-padding=1
+force-implicit-batch-dim=0
+infer-dims=3;768;768
+parse-bbox-func-name=NvDsInferParseYolo
+custom-lib-path=nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
+
+[class-attrs-all]
+# 0.25: the alley cameras (camera2-ch801 / camera3-ch201) show standing and
+# walking people at oblique angles in dim light, where the model's confidence is
+# low. At 0.30 many of those real people fell below the bar and were never
+# emitted, so multi-person alley scenes looked "empty" while the well-lit seated
+# office male on camera4 detected on nearly every frame. 0.25 recovers more of
+# those low-confidence real people. The app's fixture/motion guard suppresses the
+# empty-chair/parked-bike false positives, so the detector bar no longer has to
+# be high. If phantom NON-chair detections appear, raise back toward 0.30-0.35.
+# 0.20 (was 0.25). The two people standing by the bikes on cam2-ch801 (image 2)
+# were being emitted below 0.25 in the dim, oblique alley and never reached the
+# tracker. 0.20 recovers them. This raises furniture false positives too, but
+# the app's motion/persistence + ReID-fixture guard now suppresses those at the
+# UID-commit gate, so the detector bar can afford to be low. If phantom NON-chair
+# boxes appear, raise back toward 0.25.
+pre-cluster-threshold=0.20
+topk=300
+# 0.60 (was 0.45). This is the detector's own NMS. At 0.45, two people standing
+# close together in the narrow alley (boxes overlapping >0.45) had ONE of their
+# boxes suppressed as a "duplicate", so groups collapsed to a single detection.
+# 0.60 only suppresses near-identical boxes, keeping adjacent people separate.
+nms-iou-threshold=0.60

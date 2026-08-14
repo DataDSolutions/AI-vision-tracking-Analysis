@@ -1,0 +1,201 @@
+%YAML:1.0
+################################################################################
+# NvDCF (accuracy) + ReID re-association — DeepStream 9.1 / Jetson Orin Nano
+#
+# WHY NvDCF INSTEAD OF NvDeepSORT for this deployment:
+#   * NvDCF has a VISUAL correlation-filter tracker that keeps the bbox locked on
+#     a person THROUGH detector gaps and posture changes (sit<->stand). This is
+#     the direct fix for "ID flickers when the person stands up".
+#   * NvDCF produces a real per-object tracker_confidence (NvDeepSORT/NvSORT hard-
+#     code it to 1.0), which the app uses to reject phantom static detections.
+#   * NvDCF + Re-Assoc (reidType:2) uses the SAME resnet50 ReID model for cross-
+#     camera re-identification, and this path emits ReID user-meta more reliably
+#     than the NvDeepSORT outputReidTensor path (which was silent on this device).
+#
+# Tuned for MAX ID PERSISTENCE: high maxShadowTrackingAge, low minTrackerConfidence,
+# checkClassMatch=0 so sitting(4)<->standing(5) never tears down a track.
+#
+# ------------------------------------------------------------------------------
+# RUNTIME CRASH under load (GPUassert_VPI ... cuDCFv2/featureExtractor.cu:503,
+# "Handle doesn't point to object of accepted type"):
+# This is a VPI/PVA fault in the NvDCF visual feature extractor, NOT a model or
+# app-logic bug. The Jetson ORIN NANO has NO PVA hardware, and the log shows
+# "Failed to open PVA device node" at startup — so any tracker code path that
+# reaches for a VPI/PVA backend crashes, and it does so more often when many
+# objects are in view (more crops -> more feature-extractor calls). Mitigations,
+# in order of preference (verify on-device, this cannot be reproduced off-Jetson):
+#   1. useVPICropScaler stays 0 (below) and visualTrackerType stays 1 (NvDCF,
+#      NOT the NvDCF_VPI=2 variant) — both already set correctly here.
+#   2. Ensure the VPI CUDA backend is the default and no op requests PVA:
+#      export VPI_DEFAULT_BACKEND=cuda   (and confirm `vpi` / JetPack are the
+#      versions DS 9.1 expects for this L4T).
+#      NOTE (v22): deepstream_app_reid.py now sets VPI_DEFAULT_BACKEND=cuda
+#      automatically at the top of the file, BEFORE the tracker .so is loaded, so
+#      this export is applied for you. Override it in the environment if needed.
+#   3. If it still faults, drop featureImgSizeLevel 3->2 to lighten the visual
+#      feature extraction, and/or cap maxTargetsPerStream lower.
+#   4. As a last resort the crash disappears entirely with a non-VPI tracker
+#      (e.g. NvSORT) at the cost of the correlation-filter box-lock.
+# The detector/model changes in this round do NOT depend on resolving this; they
+# are independent. But the pipeline will keep dying until the VPI path is fixed.
+# ------------------------------------------------------------------------------
+################################################################################
+
+BaseConfig:
+  minDetectorConfidence: 0.20   # was 0.35 — the detector (config_infer.txt)
+                               # now emits at pre-cluster-threshold=0.20, so this
+                               # gate must sit at/below 0.20 or it silently
+                               # DISCARDS the dim standing alley people (image 2)
+                               # before they can be tracked. Keep this <= the
+                               # detector's pre-cluster so the detector, not the
+                               # tracker, owns the recall bar.  Original note:
+                               # was 0.50 — but the detector (config_infer.txt)
+                               # already emits at pre-cluster-threshold=0.25, so
+                               # a 0.50 gate here silently DISCARDED every
+                               # detection scoring 0.25-0.50 before it could be
+                               # tracked. Those are exactly the dim/standing/
+                               # distant alley people (camera2/camera3), which is
+                               # why those cameras produced few tracks and
+                               # camera3 committed ZERO UIDs despite 1368+ person
+                               # detections. 0.35 lets them through; the fixture/
+                               # motion guard still handles furniture false
+                               # positives. Keep this at/below pre-cluster so the
+                               # detector, not the tracker, owns the recall bar.
+  checkClassMatch: 0            # DS9.1 location; a track may change class
+                               # (sit<->stand) WITHOUT being re-identified as new
+
+TargetManagement:
+  enableBboxUnClipping: 1
+  preserveStreamUpdateOrder: 1
+  maxTargetsPerStream: 60       # was 120. VPI SEGFAULT MITIGATION #3 (paired with
+                               # featureImgSizeLevel 2 below). Each tracked target
+                               # is another visual-feature-extractor call per frame,
+                               # and the crash is load-correlated (more objects ->
+                               # more crops -> more VPI ops -> higher fault odds).
+                               # These cameras show ~4-6 people each, so 60 is far
+                               # above real occupancy while nearly halving the worst
+                               # -case extractor load that triggers the SIGSEGV.
+                               # Raise if you legitimately track more than ~60/stream.
+  minIouDiff4NewTarget: 0.30    # was 0.40. A detector box overlapping an existing
+                               # target by more than (1 - this) is associated to
+                               # it instead of spawning a new target. Lowering the
+                               # value widens that "same object" band, so a person
+                               # whose box shifts frame-to-frame is far less likely
+                               # to spawn a duplicate target (a second box / ID).
+  minTrackerConfidence: 0.15    # keep tracks alive through detector disagreement
+                               # (was 0.20). A seated person the detector keeps
+                               # dropping must not be torn down, or the tracker
+                               # re-mints a new object_id and the UID flickers.
+  probationAge: 3               # activate quickly so IDs appear fast
+  maxShadowTrackingAge: 450     # ~17s @26fps (was 150 / ~5.7s). THE primary UID
+                               # flicker fix. The log showed one seated person
+                               # (GS8YUC) re-minting tracker object_ids 1->9->20
+                               # ->34->35->36 because the detector dropped him for
+                               # longer than the old 5.7s shadow window, killing
+                               # the track. Each re-mint forced a fresh ReID /
+                               # recovery / NEW-UID cycle (the JEPZH3/BRJ1BD ->
+                               # GS8YUC merge churn). 17s of shadow tracking bridges
+                               # those detector gaps so the SAME object_id — and
+                               # therefore the same UID — persists. Held below the
+                               # 45s same-cam recovery so a truly departed person
+                               # still ages out.
+  earlyTerminationAge: 3        # was 1: a tentative target was killed after a
+                               # single frame with no matched detection, which on
+                               # a flickering detector churned brand-new tracks
+                               # (and boxes) constantly. 3 lets a new track ride
+                               # out a 2-frame detector gap before termination.
+
+TrajectoryManagement:
+  useUniqueID: 0
+  enableReAssoc: 1              # motion+ReID re-association for lost tracks
+  minMatchingScore4Overall: 0.50
+  minTrackletMatchingScore: 0.30
+  minMatchingScore4ReidSimilarity: 0.35
+  matchingScoreWeight4TrackletSimilarity: 0.70
+  matchingScoreWeight4ReidSimilarity: 0.35
+  minTrajectoryLength4Projection: 20
+  prepLength4TrajectoryProjection: 58
+  trajectoryProjectionLength: 33
+  maxAngle4TrackletMatching: 67
+  minSpeedSimilarity4TrackletMatching: 0.0574
+  minBboxSizeSimilarity4TrackletMatching: 0.1013
+  maxTrackletMatchingTimeSearchRange: 150
+                                # was 27 (~1s). This is how far back re-association
+                                # looks to reconnect a lost tracklet to a new
+                                # detection UNDER THE SAME object_id. With shadow
+                                # age now 450, the search range must grow too, or a
+                                # track lost for 2-15s gets a new id on reappearance
+                                # even though re-assoc could have restored the old
+                                # one. 150 (~5.7s) covers the common sit/stand and
+                                # occlusion gaps; ReID similarity still gates the
+                                # match so it will not stitch two different people.
+  reidExtractionInterval: 0      # extract a ReID feature EVERY frame.
+                                # v15 set this to 2 (every 3rd frame); combined
+                                # with detector interval=1 that left ~2/3 of
+                                # person detections with NO embedding
+                                # (health report: none=1647 vs vectors=860), so
+                                # brief appearances on cam-07/08 could never be
+                                # re-identified. Full extraction is affordable
+                                # at the observed 26 fps.
+
+DataAssociator:
+  dataAssociatorType: 0
+  associationMatcherType: 1      # CASCADED
+  minMatchingScore4Overall: 0.0
+  minMatchingScore4SizeSimilarity: 0.30
+  minMatchingScore4Iou: 0.10
+  minMatchingScore4VisualSimilarity: 0.40
+  matchingScoreWeight4VisualSimilarity: 0.40
+  matchingScoreWeight4SizeSimilarity: 0.20
+  matchingScoreWeight4Iou: 0.40
+  tentativeDetectorConfidence: 0.20
+  minMatchingScore4TentativeIou: 0.25
+
+StateEstimator:
+  stateEstimatorType: 1          # SIMPLE_BBOX_KF (NvDCF standard)
+  processNoiseVar4Loc: 6810.8668
+  processNoiseVar4Size: 1541.8647
+  processNoiseVar4Vel: 1348.4874
+  measurementNoiseVar4Detector: 100.0000
+  measurementNoiseVar4Tracker: 293.3238
+
+VisualTracker:
+  visualTrackerType: 1           # NvDCF (CPU/GPU). Use 2 (NvDCF_VPI) only if VPI
+                                # crop path is verified on your JetPack build.
+  useColorNames: 1
+  useHog: 1
+  featureImgSizeLevel: 2         # was 3. VPI SEGFAULT MITIGATION #3. The run
+                                # reproducibly dies with SIGSEGV in the NvDCF
+                                # visual feature extractor (cuDCFv2/featureExtractor
+                                # .cu) under load on this PVA-less Orin Nano. Level
+                                # 2 uses a smaller visual-feature image, which
+                                # markedly lightens that extractor (fewer/cheaper
+                                # VPI ops per crop) and is the config's own next
+                                # mitigation after pinning visualTrackerType=1 and
+                                # useVPICropScaler=0. Accuracy impact is minor at
+                                # these object sizes; raise back to 3 if the crash
+                                # is resolved another way and you want max fidelity.
+  featureFocusOffsetFactor_y: -0.1054
+  filterLr: 0.0767
+  filterChannelWeightsLr: 0.0339
+  gaussianSigma: 0.5687
+
+ReID:
+  reidType: 2                    # Re-ID based re-association (works with NvDCF)
+  outputReidTensor: 1            # publish features to user-meta for cross-cam
+  batchSize: 100
+  workspaceSize: 1000
+  reidFeatureSize: 256
+  reidHistorySize: 100
+  inferDims: [3, 256, 128]
+  networkMode: 1                 # FP16
+  inputOrder: 0                  # NCHW
+  colorFormat: 0                 # RGB
+  offsets: [123.6750, 116.2800, 103.5300]
+  netScaleFactor: 0.01735207
+  keepAspc: 1
+  useVPICropScaler: 0
+  addFeatureNormalization: 1
+  minVisibility4GalleryUpdate: 0.6
+  onnxFile: "/home/sanjay/DeepStream-Yolo/trackers/reid/resnet50_market1501_aicity156.onnx"
+  modelEngineFile: "/home/sanjay/DeepStream-Yolo/trackers/reid/resnet50_market1501_aicity156.onnx_b100_gpu0_fp16.engine"
