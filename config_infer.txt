@@ -7,7 +7,7 @@ model-color-format=0
 # shift and every label after the divergence point is wrong.
 onnx-file=custom-yolo26n-v3.onnx
 model-engine-file=custom-yolo26n-v3.onnx_b4_gpu0_fp16.engine
-labelfile-path=labels.txt
+#labelfile-path=labels.txt
 batch-size=4
 network-mode=2
 num-detected-classes=14
