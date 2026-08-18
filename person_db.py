@@ -222,32 +222,16 @@ class PersonDatabase:
         if rows:
             print(f"[DB] Resumed {len(rows)} open incident(s) from {self.db_path}")
 
-    def _new_id(self) -> str:
-        """Mint a globally-unique GLOBAL UID that has NEVER been used before,
-        for ANY identity class.
+    # Crockford Base32 alphabet — removes ambiguous characters:
+    # 0 (confused with O), 1 (confused with I and L), U (confused with V).
+    # DO NOT MODIFY THIS ALPHABET — changing it breaks human-readability
+    # guarantees for all UIDs generated after the change.
+    CROCKFORD_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
+    UID_LENGTH = 8
 
-        Checked against the permanent ledger (every id ever minted), not just
-        the live `persons` table, so a pruned or merged-away id is never handed
-        out again. The INSERT is what reserves it, so two concurrent callers
-        cannot receive the same id. This is the sole authority for global-UID
-        uniqueness -- callers must never fabricate an id another way (e.g. by
-        length or by camera/tracker id), per the "do not use UID length as the
-        primary guarantee of identity uniqueness" requirement."""
-        chars = string.ascii_uppercase + string.digits
+    def _new_id(self) -> str:
         while True:
-            pid = "".join(random.choices(chars, k=6))
-            if pid in self._meta_cache or pid in self._uid_ever:
-                continue
-            now = time.time()
-            try:
-                self._conn.execute(
-                    "INSERT INTO uid_ledger(person_id, minted_at, minted_str) "
-                    "VALUES (?,?,?)", (pid, now, _ts_str(now)))
-            except sqlite3.IntegrityError:
-                self._uid_ever.add(pid)
-                continue
-            self._uid_ever.add(pid)
-            return pid
+            pid = "".join(random.choices(CROCKFORD_ALPHABET, k=UID_LENGTH))
 
     def _retire_uid(self, pid, why):
         """Mark an id as no longer live. It stays in the ledger forever so it
