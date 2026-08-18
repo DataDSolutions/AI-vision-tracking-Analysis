@@ -222,16 +222,27 @@ class PersonDatabase:
         if rows:
             print(f"[DB] Resumed {len(rows)} open incident(s) from {self.db_path}")
 
-    # Crockford Base32 alphabet — removes ambiguous characters:
-    # 0 (confused with O), 1 (confused with I and L), U (confused with V).
-    # DO NOT MODIFY THIS ALPHABET — changing it breaks human-readability
-    # guarantees for all UIDs generated after the change.
-    CROCKFORD_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
-    UID_LENGTH = 8
-
     def _new_id(self) -> str:
+        # Crockford Base32 alphabet — removes ambiguous characters:
+        # 0 (confused with O), 1 (confused with I and L), U (confused with V).
+        # DO NOT MODIFY THIS ALPHABET — changing it breaks human-readability
+        # guarantees for all UIDs generated after the change.
+        _ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
+        _LENGTH = 8
         while True:
-            pid = "".join(random.choices(CROCKFORD_ALPHABET, k=UID_LENGTH))
+            pid = "".join(random.choices(_ALPHABET, k=_LENGTH))
+            if pid in self._meta_cache or pid in self._uid_ever:
+                continue
+            now = time.time()
+            try:
+                self._conn.execute(
+                    "INSERT INTO uid_ledger(person_id, minted_at, minted_str) "
+                    "VALUES (?,?,?)", (pid, now, _ts_str(now)))
+            except sqlite3.IntegrityError:
+                self._uid_ever.add(pid)
+                continue
+            self._uid_ever.add(pid)
+            return pid
 
     def _retire_uid(self, pid, why):
         """Mark an id as no longer live. It stays in the ledger forever so it
