@@ -14,6 +14,8 @@ DEFAULT_OBJECT_CLASS = "person"
 
 DEFAULT_ABSENCE_SECONDS = 900.0
 
+REID_MODEL_VERSION = "resnet50_market1501_aicity156_v1"
+
 
 def _l2(v):
     v = np.asarray(v, dtype=np.float32)
@@ -103,6 +105,7 @@ class PersonDatabase:
                 created_at REAL,
                 created_str TEXT,                    -- readable datetime
                 camera     TEXT,                     -- camera this vec came from
+                reid_model_version TEXT,             -- which ReID model produced this vec
                 FOREIGN KEY(person_id) REFERENCES persons(person_id)
             )""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_emb_person ON embeddings(person_id)")
@@ -142,6 +145,21 @@ class PersonDatabase:
         c.execute("CREATE INDEX IF NOT EXISTS idx_inc_status ON incidents(status)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_inc_camera ON incidents(camera_id)")
 
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS match_events (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts              REAL,
+                ts_str          TEXT,
+                camera          TEXT,
+                object_class    TEXT,
+                result_pid      TEXT,
+                best_score      REAL,
+                second_score    REAL,
+                absence_seconds REAL,
+                decision        TEXT
+            )""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_match_events_ts ON match_events(ts)")
+
         self._conn.commit()
         self._migrate_add_columns()
 
@@ -156,7 +174,8 @@ class PersonDatabase:
 
         eexisting = {row[1] for row in c.execute("PRAGMA table_info(embeddings)")}
         for col, decl in (("created_str", "TEXT"), ("camera", "TEXT"),
-                          ("object_class", "TEXT")):
+                          ("object_class", "TEXT"),
+                          ("reid_model_version", "TEXT")):
             if col not in eexisting:
                 c.execute(f"ALTER TABLE embeddings ADD COLUMN {col} {decl}")
 
@@ -223,19 +242,10 @@ class PersonDatabase:
             print(f"[DB] Resumed {len(rows)} open incident(s) from {self.db_path}")
 
     def _new_id(self) -> str:
-        """Mint a globally-unique GLOBAL UID that has NEVER been used before,
-        for ANY identity class.
-
-        Checked against the permanent ledger (every id ever minted), not just
-        the live `persons` table, so a pruned or merged-away id is never handed
-        out again. The INSERT is what reserves it, so two concurrent callers
-        cannot receive the same id. This is the sole authority for global-UID
-        uniqueness -- callers must never fabricate an id another way (e.g. by
-        length or by camera/tracker id), per the "do not use UID length as the
-        primary guarantee of identity uniqueness" requirement."""
-        chars = string.ascii_uppercase + string.digits
+        _ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
+        _LENGTH = 8
         while True:
-            pid = "".join(random.choices(chars, k=6))
+            pid = "".join(random.choices(_ALPHABET, k=_LENGTH))
             if pid in self._meta_cache or pid in self._uid_ever:
                 continue
             now = time.time()
@@ -265,6 +275,19 @@ class PersonDatabase:
         a = _l2(a)
         b = _l2(b)
         return float(np.dot(a, b))
+
+    def _log_match_event(self, cam, object_class, result_pid, best_score,
+                          second_score, decision, absence_seconds=None):
+        try:
+            now = time.time()
+            self._conn.execute(
+                "INSERT INTO match_events(ts, ts_str, camera, object_class, "
+                "result_pid, best_score, second_score, absence_seconds, decision) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (now, _ts_str(now), cam, object_class, result_pid,
+                 best_score, second_score, absence_seconds, decision))
+        except Exception as exc:
+            print(f"[DB] match_event log failed: {exc}")
 
     def _cams_overlap(self, cam_a, cam_b):
         """True if two cameras share a physical space (same overlap group), so
@@ -343,11 +366,16 @@ class PersonDatabase:
             scored.append((score, pid, recent, is_cross, _very_recent_here))
 
         if not scored:
+            self._log_match_event(cam, object_class, None, 0.0, 0.0, "no_candidates")
             return None, 0.0
 
         scored.sort(reverse=True)
         best_score, best_pid, best_recent, best_cross, best_very_recent = scored[0]
         second_score = scored[1][0] if len(scored) > 1 else 0.0
+        _best_absence = None
+        _best_meta = self._meta_cache.get(best_pid)
+        if _best_meta and _best_meta.get("last_seen"):
+            _best_absence = now - _best_meta["last_seen"]
 
         bar = cross_camera_threshold if best_cross else threshold
 
@@ -355,10 +383,14 @@ class PersonDatabase:
                 and best_very_recent
                 and (best_score - second_score) >= margin):
             if best_score >= posture_threshold:
+                self._log_match_event(cam, object_class, best_pid, best_score,
+                                       second_score, "posture_match", _best_absence)
                 return best_pid, best_score
 
         confident = best_score >= (bar + 0.10)
         if confident:
+            self._log_match_event(cam, object_class, best_pid, best_score,
+                                   second_score, "confident_match", _best_absence)
             return best_pid, best_score
 
         if cross_camera_floor is not None:
@@ -368,17 +400,25 @@ class PersonDatabase:
                     and has_real_runnerup
                     and best_score >= cross_camera_floor
                     and (best_score - second_score) >= cross_margin):
+                self._log_match_event(cam, object_class, best_pid, best_score,
+                                       second_score, "cross_camera_restore", _best_absence)
                 return best_pid, best_score
 
         second_qualifies = second_score >= bar
         if (best_score - second_score) < margin and second_qualifies:
+            self._log_match_event(cam, object_class, None, best_score,
+                                   second_score, "ambiguous_rejected", _best_absence)
             return None, best_score
 
         soft_ok = (best_score >= soft_threshold and best_recent
                    and not best_cross)
         if best_score >= bar or soft_ok:
+            self._log_match_event(cam, object_class, best_pid, best_score,
+                                   second_score, "bar_or_soft_match", _best_absence)
             return best_pid, best_score
 
+        self._log_match_event(cam, object_class, None, best_score,
+                               second_score, "no_match_new_uid", _best_absence)
         return None, best_score
 
     def restore_candidates(self, vec, object_class=DEFAULT_OBJECT_CLASS,
@@ -423,7 +463,8 @@ class PersonDatabase:
                 "UPDATE sightings SET last_seen=?, last_str=?, count=count+1 "
                 "WHERE person_id=? AND camera=?", (now, nowstr, pid, cam))
 
-    def create_person(self, vec, cam=None, object_class=DEFAULT_OBJECT_CLASS) -> str:
+    def create_person(self, vec, cam=None, object_class=DEFAULT_OBJECT_CLASS,
+                       model_version=REID_MODEL_VERSION) -> str:
         vec = _l2(vec)
         pid = self._new_id()
         now = time.time()
@@ -435,8 +476,9 @@ class PersonDatabase:
             (pid, object_class, now, now, 1, nowstr, nowstr, cam, 1))
         self._conn.execute(
             "INSERT INTO embeddings(person_id, object_class, vec, created_at, "
-            "created_str, camera) VALUES (?,?,?,?,?,?)",
-            (pid, object_class, vec.astype(np.float32).tobytes(), now, nowstr, cam))
+            "created_str, camera, reid_model_version) VALUES (?,?,?,?,?,?,?)",
+            (pid, object_class, vec.astype(np.float32).tobytes(), now, nowstr, cam,
+             model_version))
         self._conn.commit()
 
         self._emb_cache[pid].append(vec)
@@ -569,7 +611,8 @@ class PersonDatabase:
         return set(m.get("cams") or set()) if m else set()
 
     def add_embedding(self, pid, vec, cam=None, object_class=None,
-                       outlier_floor=0.40, guard_contamination=True):
+                       outlier_floor=0.40, guard_contamination=True,
+                       model_version=REID_MODEL_VERSION):
         """Append a new embedding to an EXISTING identity.
 
         object_class, if given, must match the identity's own stored class or
@@ -622,8 +665,9 @@ class PersonDatabase:
         now = time.time()
         self._conn.execute(
             "INSERT INTO embeddings(person_id, object_class, vec, created_at, "
-            "created_str, camera) VALUES (?,?,?,?,?,?)",
-            (pid, stored_class, vec.astype(np.float32).tobytes(), now, _ts_str(now), cam))
+            "created_str, camera, reid_model_version) VALUES (?,?,?,?,?,?,?)",
+            (pid, stored_class, vec.astype(np.float32).tobytes(), now, _ts_str(now), cam,
+             model_version))
         self._conn.execute("""
             DELETE FROM embeddings WHERE id IN (
                 SELECT id FROM embeddings WHERE person_id=?
