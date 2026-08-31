@@ -280,10 +280,10 @@ def resolve_uid_demo (pid ,fallback =""):
 FRAME_W =1280
 FRAME_H =720
 
-SIMILARITY_THRESHOLD =float (os .environ .get ("REID_SAME_CAM_THR","0.68"))
-SOFT_THRESHOLD =float (os .environ .get ("REID_SOFT_THR","0.62"))
-CROSS_CAMERA_THRESHOLD =float (os .environ .get ("REID_CROSS_CAM_THR","0.84"))
-CROSS_CAMERA_FLOOR =float (os .environ .get ("REID_CROSS_CAM_FLOOR","0.80"))
+SIMILARITY_THRESHOLD =float (os .environ .get ("REID_SAME_CAM_THR","0.65"))
+SOFT_THRESHOLD =float (os .environ .get ("REID_SOFT_THR","0.60"))
+CROSS_CAMERA_THRESHOLD =float (os .environ .get ("REID_CROSS_CAM_THR","0.80"))
+CROSS_CAMERA_FLOOR =float (os .environ .get ("REID_CROSS_CAM_FLOOR","0.76"))
 CROSS_MARGIN =float (os .environ .get ("REID_CROSS_MARGIN","0.10"))
 POSTURE_THRESHOLD =float (os .environ .get ("REID_POSTURE_THR","0.60"))
 POSTURE_WINDOW_SEC =float (os .environ .get ("REID_POSTURE_WINDOW","12.0"))
@@ -2989,7 +2989,7 @@ def main ():
     "width":FRAME_W ,
     "height":FRAME_H ,
     "live-source":1 ,
-    "batched-push-timeout":int (os .environ .get ("MUX_PUSH_TIMEOUT_US","160000")),
+    "batched-push-timeout":int (os .environ .get ("MUX_PUSH_TIMEOUT_US","350000")),
     "sync-inputs":0 ,
     "attach-sys-ts":1 ,
     })
