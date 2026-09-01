@@ -28,6 +28,22 @@ def _ts_str(ts):
         return ""
 
 
+def is_valid_uid(uid: str) -> bool:
+    """Validate a 9-char Crockford UID by checking the
+    computed check digit against the stored 9th character.
+    Accepts UIDs with or without display separators (hyphens).
+    Returns False for any 8-char legacy UID."""
+    uid = uid.replace("-", "")
+    if len(uid) != 9:
+        return False
+    _ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
+    expected = _ALPHABET[
+        sum(ord(c) * (i + 1) for i, c in enumerate(uid[:8]))
+        % len(_ALPHABET)
+    ]
+    return uid[8] == expected
+
+
 class PersonDatabase:
     def __init__(self, db_path="reid_persons.db",
                  max_embeddings_per_person=60,
@@ -223,26 +239,25 @@ class PersonDatabase:
             print(f"[DB] Resumed {len(rows)} open incident(s) from {self.db_path}")
 
     def _new_id(self) -> str:
-        """Mint a globally-unique GLOBAL UID that has NEVER been used before,
-        for ANY identity class.
-
-        Checked against the permanent ledger (every id ever minted), not just
-        the live `persons` table, so a pruned or merged-away id is never handed
-        out again. The INSERT is what reserves it, so two concurrent callers
-        cannot receive the same id. This is the sole authority for global-UID
-        uniqueness -- callers must never fabricate an id another way (e.g. by
-        length or by camera/tracker id), per the "do not use UID length as the
-        primary guarantee of identity uniqueness" requirement."""
-        chars = string.ascii_uppercase + string.digits
+        # Crockford Base32 — removes ambiguous characters:
+        # 0/O, 1/I/L, U. DO NOT MODIFY THIS ALPHABET.
+        _ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
+        _LENGTH = 8
         while True:
-            pid = "".join(random.choices(chars, k=6))
+            base = "".join(random.choices(_ALPHABET, k=_LENGTH))
+            check = _ALPHABET[
+                sum(ord(c) * (i + 1) for i, c in enumerate(base))
+                % len(_ALPHABET)
+            ]
+            pid = base + check
             if pid in self._meta_cache or pid in self._uid_ever:
                 continue
             now = time.time()
             try:
                 self._conn.execute(
-                    "INSERT INTO uid_ledger(person_id, minted_at, minted_str) "
-                    "VALUES (?,?,?)", (pid, now, _ts_str(now)))
+                    "INSERT INTO uid_ledger(person_id, minted_at, "
+                    "minted_str) VALUES (?,?,?)",
+                    (pid, now, _ts_str(now)))
             except sqlite3.IntegrityError:
                 self._uid_ever.add(pid)
                 continue

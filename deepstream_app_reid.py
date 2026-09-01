@@ -1639,7 +1639,7 @@ def _norm_posture (posture ):
         return "sitting"
     return ""
 
-def _touch_session (cam ,pid ,demo ,posture ,now_ts ):
+def _touch_session (cam ,pid ,demo ,posture ,now_ts ,moved =None ):
     """Record/extend the dwell of committed UID `pid` on camera `cam`.
     Called once per committed detection per frame.
 
@@ -1694,7 +1694,7 @@ def _touch_session (cam ,pid ,demo ,posture ,now_ts ):
 
     if DB is not None :
         try :
-            DB .touch_incident (pid ,cam ,now =now_ts )
+            DB .touch_incident (pid ,cam ,now =now_ts ,moved =moved )
         except Exception as _e :
             print (f"[INCIDENT] touch_incident({pid },{cam }) error: {_e }")
 
@@ -2729,7 +2729,8 @@ def _handle_batch (batch_meta ):
                             partial_cnt [cam ]+=1
                     if not pid .startswith ("T"):
                         _cam_ids [cam ].add (pid )
-                        _touch_session (cam ,pid ,demo_part ,posture_part ,now )
+                        _touch_session (cam ,pid ,demo_part ,posture_part ,now ,
+                        moved =tracker_ever_moved .get (tkey ,False ))
 
 
                 except StopIteration :
